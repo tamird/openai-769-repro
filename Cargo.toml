@@ -1,0 +1,25 @@
+[package]
+name = "stainless-openai-timeout-repro"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+futures = { version = "0.3.29", default-features = false, features = ["alloc"] }
+http-body-util = { version = "0.1.0", default-features = false }
+hyper = { version = "1.0.1", default-features = false, features = [
+    "client",
+    "http1",
+    "http2",
+] }
+hyper-util = { version = "0.1.1", default-features = false, features = [
+    "tokio",
+] }
+tokio = { version = "1.34.0", default-features = false, features = [
+    "macros",
+    "net",
+    "rt",
+    "time",
+] }
+tokio-native-tls = { version = "0.3.1", default-features = false }
+native-tls = { version = "*", default-features = false, features = ["alpn"] }
+socket2 = { version = "0.5.5", default-features = false }
