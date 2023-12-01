@@ -98,7 +98,7 @@ async fn run(connection_index: usize, h2: bool, request: &hyper::Request<String>
         println!("{connection_index}:{request_index}: SendRequest::ready: {elapsed:?}");
         let () = ready.unwrap();
         let (response, elapsed) = match tokio::time::timeout(
-            std::time::Duration::from_secs(600), // This timeout catches the bug. Decrease if impatient.
+            std::time::Duration::from_secs(60), // This timeout catches the bug. Decrease if impatient.
             measure(request_sender.send_request(request.to_owned())),
         )
         .await
@@ -115,8 +115,7 @@ async fn run(connection_index: usize, h2: bool, request: &hyper::Request<String>
                         }
                     }
                 }
-                println!("{connection_index}:{request_index}: SendRequest::send_request: timeout {seen_headers:?}");
-                return;
+                panic!("{connection_index}:{request_index}: SendRequest::send_request: timeout {seen_headers:?}");
             }
         };
         println!("{connection_index}:{request_index}: SendRequest::send_request: {elapsed:?}");
@@ -132,8 +131,65 @@ async fn run(connection_index: usize, h2: bool, request: &hyper::Request<String>
             mut body,
         ) = response.into_parts();
 
-        if status != hyper::StatusCode::OK {
-            println!("{connection_index}:{request_index}: {status:?} {headers:?}");
+        match status {
+            hyper::StatusCode::OK => {}
+            hyper::StatusCode::TOO_MANY_REQUESTS => {
+                for value in headers.get_all("x-ratelimit-reset-requests") {
+                    let bytes = value.as_bytes();
+
+                    let mut total = std::time::Duration::ZERO;
+                    let mut iter = bytes.iter().enumerate().rev();
+                    if let Some((mut multiplier_index, byte)) = iter.next() {
+                        let mut multiplier = match char::from(*byte) {
+                            's' => std::time::Duration::from_secs(1),
+                            'm' => std::time::Duration::from_secs(60),
+                            'h' => std::time::Duration::from_secs(3600),
+                            c => {
+                                panic!("{connection_index}:{request_index}: unknown unit: {c}");
+                            }
+                        };
+                        while let Some((index, byte)) = iter.next() {
+                            match char::from(*byte) {
+                                '0'..='9' | '.' => {}
+                                c => {
+                                    let multiplier = std::mem::replace(
+                                        &mut multiplier,
+                                        match c {
+                                            's' => std::time::Duration::from_secs(1),
+                                            'm' => std::time::Duration::from_secs(60),
+                                            'h' => std::time::Duration::from_secs(3600),
+                                            c => {
+                                                panic!(
+                                                "{connection_index}:{request_index}: unknown unit: {c}"
+                                            );
+                                            }
+                                        },
+                                    );
+                                    let start = index + 1;
+                                    let end = std::mem::replace(&mut multiplier_index, index);
+                                    let number = &bytes[start..end];
+                                    let number = std::str::from_utf8(number).unwrap();
+                                    let number: f32 = number.parse().unwrap();
+                                    let number = multiplier.mul_f32(number);
+                                    total = total.checked_add(number).unwrap();
+                                }
+                            }
+                        }
+                        let number = &bytes[..multiplier_index];
+                        let number = std::str::from_utf8(number).unwrap();
+                        let number: f32 = number.parse().unwrap();
+                        let number = multiplier.mul_f32(number);
+                        total = total.checked_add(number).unwrap();
+                    }
+
+                    println!(
+                        "{connection_index}:{request_index}: {} {total:?}",
+                        value.to_str().unwrap()
+                    );
+                    tokio::time::sleep(total).await;
+                }
+            }
+            status => println!("{connection_index}:{request_index}: {status:?} {headers:?}"),
         }
         loop {
             use http_body_util::BodyExt as _;
@@ -191,7 +247,7 @@ async fn main() {
 
     futures::stream::iter(
         std::iter::repeat([false, true])
-            .take(1) // Number of connections per protocol (HTTP/1.1 and HTTP/2). Increase if impatient.
+            .take(25) // Number of connections per protocol (HTTP/1.1 and HTTP/2). Increase if impatient.
             .flatten()
             .enumerate(),
     )
