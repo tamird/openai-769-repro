@@ -134,73 +134,86 @@ async fn run(connection_index: usize, h2: bool, request: &hyper::Request<String>
         match status {
             hyper::StatusCode::OK => {}
             hyper::StatusCode::TOO_MANY_REQUESTS => {
-                for value in headers.get_all("x-ratelimit-reset-requests") {
-                    let bytes = value.as_bytes();
+                let exhausted = headers
+                    .get_all("x-ratelimit-remaining-requests")
+                    .into_iter()
+                    .any(|value| value.to_str().unwrap() == "0");
 
-                    let mut total = std::time::Duration::ZERO;
-                    let mut iter = bytes.iter().enumerate().rev();
-                    if let Some((mut multiplier_index, byte)) = iter.next() {
-                        let mut multiplier = match char::from(*byte) {
-                            's' => std::time::Duration::from_secs(1),
-                            'm' => std::time::Duration::from_secs(60),
-                            'h' => std::time::Duration::from_secs(3600),
-                            c => {
-                                panic!("{connection_index}:{request_index}: unknown unit: {c}");
-                            }
-                        };
-                        while let Some((index, byte)) = iter.next() {
-                            match char::from(*byte) {
-                                '0'..='9' | '.' => {}
+                if exhausted {
+                    for value in headers.get_all("x-ratelimit-reset-requests") {
+                        let bytes = value.as_bytes();
+
+                        let mut total = std::time::Duration::ZERO;
+                        let mut iter = bytes.iter().enumerate().rev();
+                        if let Some((mut multiplier_index, byte)) = iter.next() {
+                            let mut multiplier = match char::from(*byte) {
+                                's' => std::time::Duration::from_secs(1),
+                                'm' => std::time::Duration::from_secs(60),
+                                'h' => std::time::Duration::from_secs(3600),
                                 c => {
-                                    let multiplier = std::mem::replace(
-                                        &mut multiplier,
-                                        match c {
-                                            's' => std::time::Duration::from_secs(1),
-                                            'm' => std::time::Duration::from_secs(60),
-                                            'h' => std::time::Duration::from_secs(3600),
-                                            c => {
-                                                panic!(
+                                    panic!("{connection_index}:{request_index}: unknown unit: {c}");
+                                }
+                            };
+                            while let Some((index, byte)) = iter.next() {
+                                match char::from(*byte) {
+                                    '0'..='9' | '.' => {}
+                                    c => {
+                                        let multiplier = std::mem::replace(
+                                            &mut multiplier,
+                                            match c {
+                                                's' => std::time::Duration::from_secs(1),
+                                                'm' => std::time::Duration::from_secs(60),
+                                                'h' => std::time::Duration::from_secs(3600),
+                                                c => {
+                                                    panic!(
                                                 "{connection_index}:{request_index}: unknown unit: {c}"
                                             );
-                                            }
-                                        },
-                                    );
-                                    let start = index + 1;
-                                    let end = std::mem::replace(&mut multiplier_index, index);
-                                    let number = &bytes[start..end];
-                                    let number = std::str::from_utf8(number).unwrap();
-                                    let number: f32 = number.parse().unwrap();
-                                    let number = multiplier.mul_f32(number);
-                                    total = total.checked_add(number).unwrap();
+                                                }
+                                            },
+                                        );
+                                        let start = index + 1;
+                                        let end = std::mem::replace(&mut multiplier_index, index);
+                                        let number = &bytes[start..end];
+                                        let number = std::str::from_utf8(number).unwrap();
+                                        let number: f32 = number.parse().unwrap();
+                                        let number = multiplier.mul_f32(number);
+                                        total = total.checked_add(number).unwrap();
+                                    }
                                 }
                             }
+                            let number = &bytes[..multiplier_index];
+                            let number = std::str::from_utf8(number).unwrap();
+                            let number: f32 = number.parse().unwrap();
+                            let number = multiplier.mul_f32(number);
+                            total = total.checked_add(number).unwrap();
                         }
-                        let number = &bytes[..multiplier_index];
-                        let number = std::str::from_utf8(number).unwrap();
-                        let number: f32 = number.parse().unwrap();
-                        let number = multiplier.mul_f32(number);
-                        total = total.checked_add(number).unwrap();
-                    }
 
-                    println!(
-                        "{connection_index}:{request_index}: SLEEP {} {total:?}",
-                        value.to_str().unwrap()
-                    );
-                    tokio::time::sleep(total).await;
+                        println!(
+                            "{connection_index}:{request_index}: SLEEP {} {total:?}",
+                            value.to_str().unwrap()
+                        );
+                        tokio::time::sleep(total).await;
+                    }
+                } else {
+                    // 500 RPM. See https://platform.openai.com/account/limits.
+                    tokio::time::sleep(std::time::Duration::from_secs(60) / 500).await;
                 }
             }
-            status => println!("{connection_index}:{request_index}: {status:?} {headers:?}"),
+            status => panic!("{connection_index}:{request_index}: {status:?} {headers:?}"),
         }
         loop {
             use http_body_util::BodyExt as _;
 
             let (frame, elapsed) = measure(body.frame()).await;
-            println!("{connection_index}:{request_index}: Incoming:frame: {elapsed:?}");
+            println!("{connection_index}:{request_index}: Incoming::frame: {elapsed:?}");
             let Some(frame) = frame else { break };
             let frame = frame.unwrap();
             if status != hyper::StatusCode::OK {
                 if let Some(chunk) = frame.data_ref() {
-                    println!("{connection_index}:{request_index}: {}", chunk.len());
+                    println!(
+                        "{connection_index}:{request_index}: {}",
+                        std::str::from_utf8(chunk).unwrap()
+                    );
                 }
             }
         }
