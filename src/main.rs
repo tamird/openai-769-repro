@@ -183,7 +183,7 @@ async fn run(connection_index: usize, h2: bool, request: &hyper::Request<String>
                     }
 
                     println!(
-                        "{connection_index}:{request_index}: {} {total:?}",
+                        "{connection_index}:{request_index}: SLEEP {} {total:?}",
                         value.to_str().unwrap()
                     );
                     tokio::time::sleep(total).await;
@@ -233,7 +233,7 @@ async fn main() {
         .header(hyper::header::CONNECTION, "keep-alive")
         .body(
             r#"{
-    "model": "gpt-3.5-turbo",
+    "model": "gpt-3.5-turbo-1106",
     "messages": [
         {
             "role": "user",
@@ -247,7 +247,7 @@ async fn main() {
 
     futures::stream::iter(
         std::iter::repeat([false, true])
-            .take(25) // Number of connections per protocol (HTTP/1.1 and HTTP/2). Increase if impatient.
+            .take(5) // Number of connections per protocol (HTTP/1.1 and HTTP/2). Increase if impatient.
             .flatten()
             .enumerate(),
     )
